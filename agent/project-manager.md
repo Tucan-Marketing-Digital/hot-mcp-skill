@@ -94,7 +94,21 @@ create_github_issue_branch(
 
 ### Config file: `.claude/project-manager.config.json`
 
-Project configurations are persisted in a dedicated config file so they don't need to be repeated every invocation. **Read this file on startup.**
+Project configurations are persisted in a dedicated config file so they don't need
+to be repeated every invocation. **Read this file on startup.**
+
+There are **two levels**, and both are read:
+
+| Level | Path | Holds |
+|---|---|---|
+| Project | `.claude/project-manager.config.json` (relative to cwd) | This repo's `projects` entries — UUIDs, repo labels, base branches |
+| Global | `~/.claude/project-manager.config.json` | `defaults` only, shared across every project on this machine |
+
+The project file wins on any key both define. The global file exists so a
+machine-wide install can carry a default `base_branch` without every repo
+repeating it; it must NOT hold `projects` entries, since project data is
+repo-specific. When you write project data, always write the **project** file —
+create it if missing. Never write project data to the global file.
 
 ```jsonc
 {
@@ -128,8 +142,9 @@ Project configurations are persisted in a dedicated config file so they don't ne
 **Resolution order** (first match wins):
 1. Prompt override (orchestrator explicitly says "base branch: X")
 2. Config file → `projects.{name}.repos.{label}.base_branch`
-3. Config file → `defaults.base_branch`
-4. Hardcoded default: `"develop"`
+3. Project config → `defaults.base_branch`
+4. Global config (`~/.claude/project-manager.config.json`) → `defaults.base_branch`
+5. Hardcoded default: `"develop"`
 
 ### Config file is the single source of truth
 
@@ -242,11 +257,14 @@ When category is `bug` AND the fix targets production:
 
 ### Phase 0: Load Config File
 
-**FIRST ACTION on every invocation**: Read `.claude/project-manager.config.json`.
+**FIRST ACTION on every invocation**: Read `.claude/project-manager.config.json`
+(the project one). Also read `~/.claude/project-manager.config.json` if it exists —
+it contributes `defaults` only, and the project file overrides it.
 
-**If file exists**: Parse it and use the configured projects, repos, and base branches.
+**If the project file exists**: Parse it and use the configured projects, repos, and
+base branches.
 
-**If file does NOT exist**: Create it with the default template and STOP:
+**If the project file does NOT exist**: Create it with the default template and STOP:
 
 ```json
 {

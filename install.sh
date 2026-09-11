@@ -102,9 +102,25 @@ touch "$ROOT/agent-memory/project-manager/MEMORY.md"
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
+# Two levels, on purpose:
+#   global  → `defaults` only, shared by every project on this machine
+#   project → `projects` entries (UUIDs, repo labels, base branches) for THIS repo
+# The project file overrides the global one. Project data is repo-specific, so it
+# must never live in the global file.
+
 CONFIG="$ROOT/project-manager.config.json"
 if [ ! -f "$CONFIG" ]; then
-  cat > "$CONFIG" << 'CONF'
+  if [ "$SCOPE" = "global" ]; then
+    cat > "$CONFIG" << 'CONF'
+{
+  "defaults": {
+    "base_branch": "develop"
+  }
+}
+CONF
+    info "Global defaults created (project config is created per repo, on first run)"
+  else
+    cat > "$CONFIG" << 'CONF'
 {
   "defaults": {
     "base_branch": "develop"
@@ -112,7 +128,8 @@ if [ ! -f "$CONFIG" ]; then
   "projects": {}
 }
 CONF
-  info "Config created"
+    info "Project config created — add your project to it"
+  fi
 else
   warn "Config already existed — left untouched"
 fi
@@ -135,9 +152,32 @@ else
 fi
 
 echo ""
-echo "Requirement: the hot-platform MCP server must be configured in .mcp.json"
-echo "with a valid API key. The skill drives that server — without it, it has"
-echo "nothing to talk to."
+
+# ── MCP server check ────────────────────────────────────────────────────────
+# The skill drives the HOT MCP server. Without it, it has nothing to talk to.
+
+MCP_FOUND=""
+if [ -f "$PWD/.mcp.json" ] && grep -q '"hot-platform"' "$PWD/.mcp.json" 2>/dev/null; then
+  MCP_FOUND="./.mcp.json (this project)"
+elif [ -f "$HOME/.claude.json" ] && grep -q '"hot-platform"' "$HOME/.claude.json" 2>/dev/null; then
+  MCP_FOUND="~/.claude.json (user scope)"
+fi
+
+if [ -n "$MCP_FOUND" ]; then
+  info "HOT MCP server found in $MCP_FOUND"
+else
+  warn "HOT MCP server NOT configured — the skill has nothing to talk to yet."
+  echo ""
+  echo "  Add it once per machine (recommended — your API key is personal):"
+  echo ""
+  echo "    claude mcp add -s user -t http hot-platform \\"
+  echo "      https://mcp.hot.tucanmd.com/mcp \\"
+  echo "      -H \"Authorization: Bearer <tu-api-key>\""
+  echo ""
+  echo "  Get the API key from HOT → Ajustes → API keys."
+  echo "  Use -s project instead to commit it to this repo's .mcp.json (then the"
+  echo "  key is shared with everyone who clones it — usually not what you want)."
+fi
 echo ""
 echo "First use — ask Claude:"
 echo "  \"Usá el project-manager para listar mis solicitudes del proyecto X\""

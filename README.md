@@ -154,25 +154,56 @@ git clone https://github.com/Tucan-Marketing-Digital/hot-mcp-skill.git
 bash hot-mcp-skill/install.sh [--global]
 ```
 
-### Requisito
+### Qué es global y qué es por proyecto
+
+Tres piezas, y no van todas al mismo lugar:
+
+| Pieza | Dónde | Por qué |
+|---|---|---|
+| Skill `hot-mcp-workflows` | **Global** | Conocimiento puro, igual en todos los repos |
+| Agente `project-manager` | **Global** | Igual |
+| Servidor MCP `hot-platform` | **Global** (alcance usuario) | La API key es personal, no del repo |
+| `project-manager.config.json` | **Por proyecto** | UUID del proyecto, repos y rama base son específicos del repo |
+
+O sea: se instala **una vez por persona**, y lo único que cada repo necesita es su
+archivo de configuración — que el propio agente crea en el primer uso.
+
+El config tiene dos niveles y se leen los dos:
+
+- `~/.claude/project-manager.config.json` → solo `defaults` (ej. `base_branch`)
+- `<repo>/.claude/project-manager.config.json` → los `projects` de ese repo
+
+El del proyecto gana sobre el global en cualquier clave que ambos definan. Los datos
+de proyecto nunca van al global.
+
+### Servidor MCP
 
 La skill **maneja** el servidor MCP de HOT — sin él no tiene con qué hablar.
-Tu `.mcp.json` necesita el servidor `hot-platform` configurado con una API key
-válida:
+Configuralo una vez por máquina:
 
-```json
-{
-  "mcpServers": {
-    "hot-platform": {
-      "type": "http",
-      "url": "https://mcp.hot.tucanmd.com/mcp",
-      "headers": { "Authorization": "Bearer <tu-api-key>" }
-    }
-  }
-}
+```bash
+claude mcp add -s user -t http hot-platform \
+  https://mcp.hot.tucanmd.com/mcp \
+  -H "Authorization: Bearer <tu-api-key>"
 ```
 
-La API key se genera desde HOT, en Ajustes → API keys.
+La API key se genera en HOT → Ajustes → API keys.
+
+Con `-s project` se escribe en el `.mcp.json` del repo y queda versionado — la key
+se comparte con todo el que clone, así que normalmente no es lo que querés.
+`install.sh` detecta si el servidor ya está en alguno de los dos lugares y avisa si
+falta.
+
+### Poner en marcha un proyecto nuevo
+
+1. `cd tu-repo`
+2. Pedile a Claude: *"Usá el project-manager para listar mis solicitudes del proyecto X"*
+3. El agente no encuentra `.claude/project-manager.config.json`, lo crea y se detiene
+   pidiéndote el nombre del proyecto y sus repos
+4. Respondés, el agente lo persiste, y a partir de ahí arranca solo
+
+No hace falta correr `install.sh` por repo si ya lo instalaste global. Hacelo solo si
+querés fijar la skill a una versión distinta en ese repo.
 
 ---
 
