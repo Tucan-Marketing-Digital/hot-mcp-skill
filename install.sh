@@ -71,8 +71,16 @@ if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/SKILL.md" ]; then
   ( cd "$SCRIPT_DIR" && tar cf - \
       --exclude=install.sh --exclude=agent --exclude=.git --exclude=LICENSE . ) \
     | ( cd "$SKILL_DST" && tar xf - )
-  cp "$SCRIPT_DIR/agent/project-manager.md" "$AGENT_DST"
-  info "Skill and agent copied"
+  # A clone has agent/ next to SKILL.md; a skill directory extracted into another
+  # repo does not, so fall back to the remote rather than half-installing.
+  if [ -f "$SCRIPT_DIR/agent/project-manager.md" ]; then
+    cp "$SCRIPT_DIR/agent/project-manager.md" "$AGENT_DST"
+    info "Skill and agent copied"
+  else
+    curl -fsSL "$RAW/agent/project-manager.md" -o "$AGENT_DST" \
+      || fail "No agent/project-manager.md here and the download failed — clone $REPO and run install.sh from it"
+    info "Skill copied, agent downloaded"
+  fi
 else
   step "Downloading from $REPO"
   FILES=(

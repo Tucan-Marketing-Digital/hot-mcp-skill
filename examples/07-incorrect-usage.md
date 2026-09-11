@@ -342,8 +342,8 @@ only on the transition into `resolved`, so assigning the request afterwards reco
 
 ```
 // Named person → resolve the name
-list_team() → "Carlos Rivas" → johan-uuid
-create_request(..., assignee_ids: ["johan-uuid"])
+list_team() → "Carlos Rivas" → carlos-uuid
+create_request(..., assignee_ids: ["carlos-uuid"])
 
 // Nobody named → the API-key owner asked for it, so they own it
 whoami() → { id: "my-uuid" }

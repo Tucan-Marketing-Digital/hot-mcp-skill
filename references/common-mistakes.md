@@ -479,7 +479,7 @@ create_request(
   title: "Fix login bug",
   description: "...",
   priority: "high",
-  assignee_ids: ["johan-uuid"],   // whoami, since the user named nobody
+  assignee_ids: ["carlos-uuid"],   // whoami, since the user named nobody
   due_date: "2026-09-04",          // high → today + 3 business days
   estimated_hours: 6
 )
@@ -596,7 +596,7 @@ none of it registers anywhere.
 ### Correct
 ```
 // The user named someone
-list_team() → find "Carlos Rivas" → johan-uuid
+list_team() → find "Carlos Rivas" → carlos-uuid
 
 create_request(
   title: "Reporte de ventas mensual",
@@ -604,7 +604,7 @@ create_request(
   priority: "mid",
   project_id: "proj-uuid",
   milestone_id: "ms-uuid",
-  assignee_ids: ["johan-uuid"],
+  assignee_ids: ["carlos-uuid"],
   due_date: "2026-09-10",
   estimated_hours: 8
 )
