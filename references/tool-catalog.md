@@ -376,6 +376,9 @@ create_request(
   will be rejected, `ERRCODE HT003`) until `update_request(id, backlog_state: "ready")` is called first —
   see [backlog-and-readiness.md](backlog-and-readiness.md). Passing both `assignee_ids` and `due_date`
   here avoids this entirely.
+- **A request created without a `due_date` also cannot later be moved to `in_progress`** without one
+  (`ERRCODE HT004`) — `update_request_status` will demand the `due_date` param. Passing `due_date` at
+  creation (Rule 8) avoids both gates at once.
 
 ---
 
@@ -474,6 +477,7 @@ Move a request through the status state machine.
 | `id` | UUID | Yes | Request UUID |
 | `status` | enum | Yes | Target status |
 | `note` | string | Mandatory when `status: "blocked"` (5-500 chars) | Justification note. Ignored for every other transition |
+| `due_date` | string | Mandatory when `status: "in_progress"` **and** the request has no `due_date` yet | Due date set atomically with the status change. Same format as `update_request`'s `due_date` (bare `YYYY-MM-DD` = END of that day in America/Bogota, UTC-5; full ISO-8601 with offset stored verbatim). Ignored for every other transition |
 
 **Valid transitions**:
 
@@ -489,17 +493,29 @@ Move a request through the status state machine.
 
 **Example**:
 ```
-update_request_status(id: "uuid", status: "in_progress")
+update_request_status(id: "uuid", status: "in_progress")                       // request already has a due_date
+update_request_status(id: "uuid", status: "in_progress", due_date: "2026-09-26")  // request had none — set both in one call
 update_request_status(id: "uuid", status: "blocked", note: "esperando credenciales de staging del cliente")
 ```
 
-**Important — two independent gates, both reject the whole call, not a partial write**:
+**Important — three independent gates, all of them reject the whole call, not a partial write**:
 - **Invalid transitions** (skipping states) return a plain error. Always check current status first.
 - **`backlog_state` gate (`ERRCODE HT003`)**: if the request's `backlog_state` is still `"backlog"`, this
   call is rejected regardless of which transition was requested. `update_request(id, backlog_state:
   "ready")` first. See [backlog-and-readiness.md](backlog-and-readiness.md).
 - **Note gate (`ERRCODE HT001`)**: transitioning to `"blocked"` without a `note` of at least 5 characters
   is rejected outright — the status does not change. Not a warning.
+- **Due-date gate (`ERRCODE HT004`)**: transitioning INTO `"in_progress"` while the request has no
+  `due_date` and none is supplied in the same call is rejected outright — no work starts without a
+  deadline (REQ-87A849 / #295, `supabase/migrations/00127`, no admin bypass). Pass `due_date` and both
+  columns are written in the *same* `UPDATE`, so the gate sees the new date. Two separate calls
+  (`update_request(due_date)` then `update_request_status`) also work, but the one-call form is the
+  correct one. See [backlog-and-readiness.md](backlog-and-readiness.md).
+
+> `note` and `due_date` cannot be passed in the **same** `update_request_status` call — the underlying
+> RPC refuses the combination outright (the due-date log trigger consumes the change note before the
+> status log can read it). In practice they never need to coexist: `note` is only required entering
+> `blocked`, `due_date` only entering `in_progress`.
 
 ---
 
@@ -517,7 +533,7 @@ Update fields of an existing request. Does NOT change status — use `update_req
 | `priority` | enum | No | `critical` (P0), `high` (P1), `mid` (P2), `low` (P3). Changing to `critical` does NOT retroactively pull `due_date` in — update it explicitly if the new urgency should too |
 | `category` | enum | No | `bug`, `mejora`, `nuevo` |
 | `domain` | enum | No | `development`, `design`, `global` |
-| `due_date` | string/null | No | `YYYY-MM-DD` or `null` to remove. Requires `note` if a `due_date` was already set (see below) |
+| `due_date` | string/null | No | `YYYY-MM-DD` or `null` to remove. Requires `note` if a `due_date` was already set (see below). `null` is **rejected outright** (`ERRCODE HT004`) while the request's `status` is `in_progress` — no note can authorize it |
 | `estimated_hours` | number/null | No | Hours > 0 or `null` to remove |
 | `assignee_ids` | UUID[] | No | Replace all assignees. Empty array `[]` removes all. |
 | `backlog_state` | enum | No | `"backlog"` or `"ready"` — SR-4/SR-15 readiness axis, orthogonal to `status`. `"backlog"` is only accepted while the request's current `status` is still `pending`/`assigned`. See [backlog-and-readiness.md](backlog-and-readiness.md) |
@@ -554,6 +570,19 @@ update_request(id: "uuid", due_date: "2026-09-20", note: "cliente pidió una sem
 ```
 Omitting `note` here fails with `ERRCODE HT002` — the DB rejects the entire update. Setting a `due_date`
 that was previously `null` never requires a note.
+
+**Cannot clear the `due_date` of an `in_progress` request** (REQ-87A849 / #295):
+```
+// status is "in_progress"
+update_request(id: "uuid", due_date: null, note: "cliente pausó el proyecto")
+→ rejected, ERRCODE HT004 — "Una solicitud En progreso necesita una fecha límite."
+```
+The `note` doesn't help here: HT002 asks *why* the date moved, HT004 refuses the resulting state
+outright. An `in_progress` request can never be left without a deadline. Move it out of `in_progress`
+first (`update_request_status(id, "blocked" | "under_review" | "cancelled", ...)`), or just change the
+date instead of clearing it. Legacy rows already sitting in `in_progress` with no `due_date` are not
+broken by this — the gate only fires on a genuine `status`/`due_date` change, so they can still be
+reprioritized, reassigned or resolved, and can be fixed forward at any time by simply setting a date.
 
 **Example — Mark a refined backlog request ready**:
 ```

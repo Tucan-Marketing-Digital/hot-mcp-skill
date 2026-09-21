@@ -407,9 +407,50 @@ Decime si ajusto fecha, horas o responsable.
 stated rule, naming the rule, and inviting correction in the same breath. Only the first one is
 forbidden.
 
+Since REQ-87A849 / #295 the omission is no longer even survivable: a dateless request cannot be moved
+to `in_progress` at all (`ERRCODE HT004`, see section 13), so skipping the date at creation just
+defers the decision to the moment someone tries to start the work.
+
 ---
 
-## Summary: The 15 Commandments
+## 13. Starting a request that has no `due_date`
+
+### Wrong
+
+```
+// get_request shows due_date: null
+update_request_status(id: "req-uuid", status: "in_progress")
+→ Error: "Una solicitud En progreso necesita una fecha límite. Pasá el parámetro due_date para continuar."
+```
+
+### Why it's wrong
+`trg_request_due_date_required_in_progress` (`supabase/migrations/00127`, `ERRCODE HT004`) refuses any
+write that would leave a request `in_progress` with no `due_date` — no admin bypass, and the whole call
+is rejected, so the status never changes. It's the same class of gate as HT001 (block without a note)
+and HT003 (status change while in the backlog). The reasoning is section 12's, promoted to a database
+rule: work that's actively underway with no deadline is invisible to the overdue views, the reminder
+cron and every on-time metric.
+
+The same trigger also blocks the reverse — `update_request(id, due_date: null)` on a request that's
+already `in_progress` is rejected, and unlike HT002 no `note` authorizes it.
+
+### Correct
+
+```
+update_request_status(
+  id: "req-uuid",
+  status: "in_progress",
+  due_date: "2026-09-26"     // high → today + 3 business days, same defaults as section 12
+)
+```
+
+`due_date` rides the same `UPDATE` as the status, which is exactly what the gate inspects — so one call
+is enough, and announce the derived date the same way section 12 does. To genuinely drop a deadline,
+move the request out of `in_progress` first (`blocked`, with its own `note`), then clear it.
+
+---
+
+## Summary: The 16 Commandments
 
 1. **Always query context** before creating (`list_projects`, `list_milestones`, `list_team`)
 2. **Always link** `project_id` and `milestone_id` when they exist
@@ -426,3 +467,4 @@ forbidden.
 13. **Verify project has GitHub repo** before creating dev requests — STOP and inform if missing
 14. **Never create a request with empty `assignee_ids`** — the person named (`list_team`) or the API-key owner (`whoami`). An unassigned request earns zero XP, permanently
 15. **Announce every derived value** — assignee, date and hours in one correctable line. A silent default is indistinguishable from a fabrication
+16. **Never move a request to `in_progress` without a `due_date`** — the DB rejects it (`ERRCODE HT004`); pass `due_date` on `update_request_status` if the request doesn't have one yet, and never clear the date of a request that's already `in_progress`

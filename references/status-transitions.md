@@ -22,6 +22,28 @@ Fix: `update_request(id, backlog_state: "ready")` first (after refining the requ
 
 ---
 
+## ⛔ Prerequisite: `in_progress` Requires a `due_date`
+
+A second gate sits specifically in front of `→ in_progress`: the request must already have a
+`due_date`, or one must be supplied in the same call. Otherwise the DB rejects the transition with
+`ERRCODE HT004` (`trg_request_due_date_required_in_progress`, `supabase/migrations/00127`, REQ-87A849 /
+#295), no admin bypass. The same trigger also refuses to let an already-`in_progress` request have its
+`due_date` cleared.
+
+```
+due_date: null  →  update_request_status(id, "in_progress")                      →  rejected (HT004)
+due_date: null  →  update_request_status(id, "in_progress", due_date: "2026-09-26")  →  OK
+```
+
+Fix: pass the `due_date` param on `update_request_status` — it's written in the same `UPDATE` as the
+status, which is what the gate inspects. Applies to every entry point into `in_progress`
+(`pending → in_progress`, `assigned → in_progress`, `blocked → in_progress`,
+`under_review → in_progress`). Rows that were already `in_progress` without a date before 00127 are
+left alone until their `status` or `due_date` genuinely changes. See
+[backlog-and-readiness.md](backlog-and-readiness.md).
+
+---
+
 ## Request Status State Machine
 
 ### States
@@ -81,6 +103,10 @@ Fix: `update_request(id, backlog_state: "ready")` first (after refining the requ
 7. **`→ blocked` requires a `note`**: Any transition into `blocked` needs the `note` param (5-500 chars)
    justifying it, or `update_request_status` is rejected outright (`ERRCODE HT001`) — see
    [backlog-and-readiness.md](backlog-and-readiness.md)
+8. **`→ in_progress` requires a `due_date`**: Any transition into `in_progress` needs the request to
+   already have a `due_date`, or the `due_date` param in the same call, or `update_request_status` is
+   rejected outright (`ERRCODE HT004`). The same gate refuses to clear the `due_date` of a request
+   that's already `in_progress` — see [backlog-and-readiness.md](backlog-and-readiness.md)
 
 ### Common Transition Sequences
 

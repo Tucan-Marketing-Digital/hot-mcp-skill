@@ -8,7 +8,7 @@ description: |
   tracking progress with checklists, planning project workflows, or asking about HOT MCP tool usage.
 
 license: MIT
-version: 1.4.0
+version: 1.5.0
 category: workflow
 author: Tucan Marketing Digital
 requires_tools:
@@ -69,6 +69,9 @@ call (`resolveCreateBacklogState`, `packages/shared/src/request-readiness.ts`) �
 Rule 8/16 below already require you to pass. A request created that way never touches this gate. One
 lands in `backlog` only when created without an assignee, without a due date, or explicitly forced there
 (`ready: false`).
+
+**A second, independent gate sits in front of `in_progress`**: even a `ready` request cannot enter
+`in_progress` without a `due_date` (`ERRCODE HT004`, `supabase/migrations/00127`) — see Rule 19 below.
 
 **How to get a request out of the backlog** — `update_request(id, backlog_state: "ready")`. There is no
 dedicated `mark_request_ready` tool. Before flipping it, make sure the request is actually refined (Rule
@@ -189,8 +192,8 @@ being tracked. Everything that belongs to a project or a milestone gets all thre
 
 | Tool | Purpose | Key params |
 |------|---------|------------|
-| `update_request_status` | Move request through states — rejected if `backlog_state` is still `backlog` (HT003) | `id`, `status`, `note?` (mandatory, ≥5 chars, when `status: "blocked"`) |
-| `update_request` | Update request fields (NOT status) — also the only way to flip `backlog_state` | `id`, `title?`, `priority?`, `due_date?`, `estimated_hours?`, `assignee_ids?`, `category?`, `domain?`, `backlog_state?`, `note?` (mandatory, ≥5 chars, when changing/clearing an already-set `due_date`) |
+| `update_request_status` | Move request through states — rejected if `backlog_state` is still `backlog` (HT003) | `id`, `status`, `note?` (mandatory, ≥5 chars, when `status: "blocked"`), `due_date?` (mandatory when `status: "in_progress"` and the request has none — HT004) |
+| `update_request` | Update request fields (NOT status) — also the only way to flip `backlog_state` | `id`, `title?`, `priority?`, `due_date?` (cannot be set to `null` while `status` is `in_progress` — HT004), `estimated_hours?`, `assignee_ids?`, `category?`, `domain?`, `backlog_state?`, `note?` (mandatory, ≥5 chars, when changing/clearing an already-set `due_date`) |
 | `update_milestone` | Update milestone fields/status | `milestone_id`, `status?`, `name?`, `depends_on?`, `group_id?` |
 | `update_milestone_group` | Rename/redescribe a milestone group | `id`, `name?`, `description?` |
 | `link_milestone` | Link/unlink request to milestone | `request_id`, `milestone_id` (null=unlink) |
@@ -348,7 +351,9 @@ above for exactly what each missing field breaks.
   before creating. Ask *once*, with your best guess offered as the starting point.
 
 A pre-existing request that reaches `in_progress` still missing either field gets it filled with
-`update_request` first — same defaults, same one-line announcement.
+`update_request` first — same defaults, same one-line announcement. For `due_date` this isn't a
+convention but a DB gate: `in_progress` without a date is rejected (`ERRCODE HT004`, Rule 19), and
+`update_request_status` takes a `due_date` param so both can be set in one call.
 
 **Only truly optional** for a throwaway standalone request tied to no project and no milestone.
 
@@ -450,6 +455,33 @@ comment-thread message — it's written onto the log row itself (`request_status
 date moved) and who or what unblocks it — "bloqueado, esperando credenciales de staging de @[Ana](uuid)"
 is a note; "bloqueado" alone will pass the 5-character floor but tells nobody anything.
 
+### 19. No `in_progress` Without a `due_date` — `ERRCODE HT004`
+
+A request cannot **enter** `in_progress` without a `due_date`, and one that's already `in_progress`
+cannot have its `due_date` **removed**. Enforced by a DB trigger
+(`trg_request_due_date_required_in_progress`, `supabase/migrations/00127`, REQ-87A849 / #295) with **no
+admin bypass** — the whole call is rejected, the status never changes. Work that's actually underway
+always has a deadline; without one it's invisible to the overdue views, the reminders and the on-time
+metrics.
+
+`update_request_status` takes an optional **`due_date`** param for exactly this: it's written in the
+same `UPDATE` as the status, so one call satisfies the gate.
+
+```
+update_request_status(id, "in_progress")                        → rejected (HT004) if the request has no due_date
+update_request_status(id, "in_progress", due_date: "2026-09-26") → OK, both set atomically
+
+update_request(id, due_date: null)   // request is in_progress → rejected (HT004); no note authorizes it
+```
+
+Derive the date from `priority` exactly as Rule 8 does (critical = today / high +3 / mid +7 / low +14
+business days) and announce it in the same correctable line. `due_date` is ignored on every transition
+other than into `in_progress`. To genuinely drop a deadline, move the request out of `in_progress`
+first (`blocked`/`under_review`/`cancelled`, with its own `note`), then clear it. Requests that were
+already `in_progress` without a date before this rule shipped keep working — the gate only fires on a
+real `status` or `due_date` change. A *backlog* request with no date reports HT003 first (mark it
+`ready` before anything else).
+
 ---
 
 ## Task Resolution Flow (Working a Single Request)
@@ -467,6 +499,8 @@ The most common interaction: "resolve/work on this request." This is the sequenc
 
 3. Move to in_progress          → update_request_status(id, "in_progress")
                                    (from whatever the current valid status is — pending, assigned, blocked, or back from under_review)
+   → No due_date on the request? → update_request_status(id, "in_progress", due_date: "YYYY-MM-DD")
+                                   (mandatory, ERRCODE HT004 otherwise — derive it from priority, Rule 8/19)
    → Check milestone cascade (Rule 14): if this is the first active request in its milestone, move the milestone to in_progress too
 
 4. BEFORE touching any code:
@@ -575,6 +609,8 @@ Avoid these patterns:
 | Mark a batch of requests `ready` without refining them first | Defeats the HT003 gate's purpose — it just relabels the same incomplete requests as visible | Fill `assignee_ids` + `due_date` + `estimated_hours` (+ checklist if it has steps) in the same pass as the `ready` flip (Rule 17) |
 | Call `update_request_status(status: "blocked")` without `note` | Trigger rejects the **whole UPDATE** — this is not a warning, the status never changes, `ERRCODE HT001` | Pass `note` (≥5 chars) explaining what's blocking it and who/what unblocks it (Rule 18) |
 | Clear or change an already-set `due_date` without `note` | Same as above for the date axis — rejected outright, `ERRCODE HT002` | Pass `note` (≥5 chars) explaining why the date moved or was removed (Rule 18) |
+| Move a request with no `due_date` to `in_progress` | Rejected outright, `ERRCODE HT004` — the status never changes; work underway with no deadline is invisible to every overdue/on-time view | Pass `due_date` in the same call: `update_request_status(id, "in_progress", due_date: "YYYY-MM-DD")`, derived from `priority` (Rule 8/19) |
+| Clear the `due_date` of a request that's already `in_progress` | Rejected outright, `ERRCODE HT004` — a `note` doesn't authorize it, unlike HT002 | Move it out of `in_progress` first (`blocked`/`under_review`/`cancelled`, with its own `note`), then clear the date (Rule 19) |
 | Leave a request sitting in the backlog expecting it to show up on the board | It never will — `backlog_state` is invisible to `status`, nothing "graduates" it automatically | Refine it and flip `backlog_state: "ready"` explicitly (Rule 17) |
 
 > Full anti-patterns: [references/common-mistakes.md](references/common-mistakes.md)
@@ -585,7 +621,7 @@ Avoid these patterns:
 
 ### Reference Documentation
 - [Tool Catalog](references/tool-catalog.md) — Every tool with full params and examples
-- [Backlog and Readiness](references/backlog-and-readiness.md) — The HT003 gate, the "born ready" criterion, mandatory change notes
+- [Backlog and Readiness](references/backlog-and-readiness.md) — The HT003 gate, the "born ready" criterion, mandatory change notes, the HT004 due-date gate
 - [Status Transitions](references/status-transitions.md) — State machines and rules
 - [GitHub Integration](references/github-integration.md) — Branch naming, auto-close, trazabilidad
 - [Common Mistakes](references/common-mistakes.md) — Anti-patterns with corrections

@@ -1,7 +1,9 @@
 # Example: Blocked With Reason
 
 Blocking a request and changing an already-set due date — both require a `note` param (≥5 chars) or the
-DB rejects the entire call. Full mechanics: [backlog-and-readiness.md](../references/backlog-and-readiness.md).
+DB rejects the entire call. A third gate applies on the way back in: `in_progress` always needs a
+`due_date` (`ERRCODE HT004`). Full mechanics:
+[backlog-and-readiness.md](../references/backlog-and-readiness.md).
 
 ---
 
@@ -81,6 +83,10 @@ an already-set `due_date` is changing at all, not about which direction:
 update_request(id: "req-uuid", due_date: null, note: "cliente sin fecha de respuesta, se retoma cuando desbloquee")
 ```
 
+**This only works because the request is `blocked` right now.** The same call on a request still
+`in_progress` is rejected outright with `ERRCODE HT004` — no note authorizes leaving an in-progress
+request without a deadline (REQ-87A849 / #295). Order matters: block first, then clear the date.
+
 ---
 
 ## Step 4: Credentials arrive — unblock and resume
@@ -93,6 +99,14 @@ add_comment(
 
 update_request_status(id: "req-uuid", status: "in_progress")
 // note is NOT required here — HT001 only gates transitions INTO "blocked"
+```
+
+If the `due_date` was cleared back in Step 3, this resume fails — `in_progress` always needs a date
+(`ERRCODE HT004`). Set it in the same call:
+
+```
+update_request_status(id: "req-uuid", status: "in_progress", due_date: "2026-10-02")
+// status and due_date written in the same UPDATE, which is what the gate inspects
 ```
 
 ---

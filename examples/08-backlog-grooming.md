@@ -120,3 +120,15 @@ create_github_issue_branch(request_id: "req-3-uuid")
 
 A request that's still `backlog` at this point would reject the `update_request_status` call with
 `ERRCODE HT003` — see [Mistake 21](../references/common-mistakes.md).
+
+This works without a `due_date` param because the grooming pass above already set one. A request that
+was flipped `ready` without a date (the anti-pattern in the previous section) hits the *second* gate
+here instead — `ERRCODE HT004`, "no `in_progress` without a `due_date`" — and needs it supplied in the
+call:
+
+```
+update_request_status(id: "req-2-uuid", status: "in_progress", due_date: "2026-09-26")
+```
+
+Another reason to refine and flip in the same pass: a properly groomed request clears both gates at
+once. See [Mistake 25](../references/common-mistakes.md).

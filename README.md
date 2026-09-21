@@ -63,10 +63,15 @@ Claude Code automatically discovers this skill when you mention:
 - HT001
 - HT002
 - HT003
+- HT004
 - justification note
 - nota de justificación
 - blocked without note
 - change due date reason
+- fecha límite obligatoria
+- due date required
+- in progress sin fecha
+- no puedo pasar a en progreso
 
 ### GitHub Integration Keywords
 - github issue
@@ -115,7 +120,7 @@ Claude Code automatically discovers this skill when you mention:
 Provides comprehensive workflows and best practices for the HOT Platform MCP tools:
 
 - **Assignment & Scheduling (non-negotiable)** — every request is born with an assignee, a `due_date` and an `estimated_hours`; what each missing field breaks, and the priority-based date defaults
-- **Backlog & Readiness (non-negotiable)** — a request in `backlog_state: "backlog"` cannot change `status` at all (`ERRCODE HT003`); the "born ready" criterion, the refine-before-flip checklist, and the mandatory justification notes (`ERRCODE HT001`/`HT002`) for blocking or moving a due date
+- **Backlog & Readiness (non-negotiable)** — a request in `backlog_state: "backlog"` cannot change `status` at all (`ERRCODE HT003`); the "born ready" criterion, the refine-before-flip checklist, the mandatory justification notes (`ERRCODE HT001`/`HT002`) for blocking or moving a due date, and the due-date requirement for `in_progress` (`ERRCODE HT004`)
 - **Request Lifecycle** — From creation to resolution with proper state transitions
 - **Milestone Management** — Creating, chaining dependencies, tracking completion
 - **GitHub Integration** — Issue+branch creation, PR with auto-close, branch naming conventions
@@ -223,7 +228,7 @@ hot-mcp-workflows/
 ├── README.md                         # This file (auto-discovery)
 ├── references/
 │   ├── tool-catalog.md               # All 25 tools with full params
-│   ├── backlog-and-readiness.md      # HT003 status gate, "born ready" criterion, mandatory change notes (HT001/HT002)
+│   ├── backlog-and-readiness.md      # HT003 status gate, "born ready" criterion, mandatory change notes (HT001/HT002), due-date gate for in_progress (HT004)
 │   ├── status-transitions.md         # State machines and rules
 │   ├── github-integration.md         # Branch naming, auto-close
 │   ├── common-mistakes.md            # Anti-patterns and corrections

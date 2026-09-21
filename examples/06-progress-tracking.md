@@ -164,6 +164,7 @@ add_comment(
 | Work completed | `update_checklist_item` | Mark criteria done |
 | Design decision | `add_comment` | Document the "why" |
 | Hit a blocker | `update_request_status("blocked", note: "...")` + `add_comment` | `note` is mandatory (≥5 chars, ERRCODE HT001 otherwise) |
+| Start work on a request with no deadline | `update_request_status("in_progress", due_date: "...")` | `due_date` is mandatory when the request has none (ERRCODE HT004 otherwise) |
 | Need someone's input | `add_comment` with `@[Name](uuid)` | Tag the person |
 | Blocker resolved | `add_comment` + `update_request_status("in_progress")` | Explain resolution |
 | Review feedback | `add_comment` + `update_request_status("in_progress")` | Document feedback |

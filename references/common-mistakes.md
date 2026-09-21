@@ -741,6 +741,55 @@ row's current value, not on what the caller assumes it is.
 
 ---
 
+## Mistake 25: Starting a request that has no `due_date`
+
+### Wrong
+```
+// Request has due_date: null
+update_request_status(id: "uuid", status: "in_progress")
+```
+
+### Why it fails
+`trg_request_due_date_required_in_progress` rejects the transition outright (`ERRCODE HT004`,
+`supabase/migrations/00127`, REQ-87A849 / #295) when the resulting row would be `in_progress` with
+`due_date IS NULL`. Like HT001/HT003, **the whole call fails** — the status does not change, there is no
+partial write and no admin bypass. The point is that a request being actively worked on always has a
+deadline: without one it's invisible to the overdue views, the deadline reminders and the on-time
+metrics, which is exactly the state "en progreso" is supposed to make impossible.
+
+The same trigger also refuses the reverse move — you cannot clear the `due_date` of a request that's
+already `in_progress` (see below), and no `note` authorizes it: HT002 asks *why* the date changed, HT004
+refuses the resulting state.
+
+### Correct
+```
+// One call — status and due_date are written in the SAME UPDATE, which is what the gate inspects
+update_request_status(id: "uuid", status: "in_progress", due_date: "2026-09-26")
+```
+```
+// Also valid: set the date first, then start it (two calls, same outcome)
+update_request(id: "uuid", due_date: "2026-09-26")
+update_request_status(id: "uuid", status: "in_progress")
+```
+```
+// WRONG — clearing the date of a request already in_progress
+update_request(id: "uuid", due_date: null, note: "cliente pausó el proyecto")
+→ rejected, HT004
+
+// Right: move it out of in_progress first
+update_request_status(id: "uuid", status: "blocked", note: "cliente pausó el proyecto indefinidamente")
+update_request(id: "uuid", due_date: null, note: "cliente pausó el proyecto indefinidamente")
+```
+
+### Prevention
+Derive the `due_date` from `priority` (critical = today / high +3 / mid +7 / low +14 business days) and
+pass it at `create_request` (Rule 8) — a request born with a date never meets this gate. When you're
+starting a request that somehow lacks one, decide the date and pass it as the `due_date` param of the
+same `update_request_status` call instead of discovering the rejection first. Note that a *backlog*
+request with no date reports HT003 (mark it `ready` first), not HT004 — the Ready gate fires first.
+
+---
+
 ## Quick Reference: Correct Order
 
 **Working an existing request** (already created — the most common flow):
@@ -748,6 +797,7 @@ row's current value, not on what the caller assumes it is.
 1. get_request / list_requests            ← Find the request
 2. Check assignment                       ← Yours? proceed. Unassigned? ask + whoami. Someone else's? ask.
 3. update_request_status("in_progress")   ← From whatever the current valid status is
+   → No due_date on the request? pass `due_date` in this same call (HT004, Mistake 25)
    → Cascade: milestone still "pending"? move it to "in_progress" too
 4. domain = "development"?                ← Verify GitHub repo linked, STOP if missing
    → create_github_issue_branch           ← Check out the branch, THEN start
