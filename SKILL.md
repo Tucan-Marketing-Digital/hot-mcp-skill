@@ -2,13 +2,15 @@
 name: hot-mcp-workflows
 description: |
   Workflows and best practices for using the HOT (Hub de Operaciones Tecnicas) MCP tools.
-  Covers request lifecycle, milestone management, GitHub integration, checklists, and team coordination.
+  Covers request lifecycle, milestone management, GitHub integration, checklists, team coordination,
+  and forum authoring (posts, comments, categories).
 
   Use when: creating requests via MCP, managing milestones, linking GitHub issues/branches/PRs,
-  tracking progress with checklists, planning project workflows, or asking about HOT MCP tool usage.
+  tracking progress with checklists, planning project workflows, writing or publishing forum posts
+  ("foro", crear/publicar post, forum comment, categorias del foro), or asking about HOT MCP tool usage.
 
 license: MIT
-version: 1.5.0
+version: 1.6.0
 category: workflow
 author: Tucan Marketing Digital
 requires_tools:
@@ -18,7 +20,7 @@ requires_tools:
 # HOT MCP Workflows
 
 **Status**: Production Ready
-**Last Updated**: 2026-09-10
+**Last Updated**: 2026-10-27
 **Source**: Tucan-Marketing-Digital/zana-v2
 
 ---
@@ -45,8 +47,14 @@ What are you trying to do?
 ├─ Plan a full project with milestones
 │   └─ list_projects → create milestone group(s) → create milestones (group_id + depends_on chain) → create requests per milestone → execute
 │
-└─ Track progress on existing work
-    └─ list_requests / get_request → update_request_status / checklist / comments
+├─ Track progress on existing work
+│   └─ list_requests / get_request → update_request_status / checklist / comments
+│
+└─ Write/read something in the FORUM (/foro) — not a request at all
+    ├─ Read      → list_forum_posts / get_forum_post (Markdown out, never registers a view)
+    ├─ Publish   → list_forum_categories → create_forum_post (lands as DRAFT) → get_forum_post to verify → update_forum_post(status:"published")
+    ├─ Extend    → update_forum_post(append_markdown) — NEVER content_markdown when content_conversion.lossy is true
+    └─ Comment   → add_forum_comment, mentions written as @[Nombre](uuid) inside content
 ```
 
 ---
@@ -156,7 +164,7 @@ being tracked. Everything that belongs to a project or a milestone gets all thre
 
 ---
 
-## Tool Catalog (25 tools)
+## Tool Catalog (33 tools)
 
 ### Identity
 
@@ -214,6 +222,26 @@ being tracked. Everything that belongs to a project or a milestone gets all thre
 |------|---------|------------|
 | `create_github_issue_branch` | Create GitHub issue + branch | `request_id`, `base_branch?`, `custom_branch_name?`, `extra_labels?`, `repo_label?` |
 | `create_github_pr` | Create PR with auto-close | `request_id`, `body?`, `draft?`, `title?` |
+
+### Forum (`/foro`) — scopes `forum:read` / `forum:write`
+
+Content is **always plain Markdown** on this surface, both directions. See [Foro](#foro-markdown-draft-first-and-an-immutable-slug) below.
+
+| Tool | Scope | Purpose | Key params |
+|------|-------|---------|------------|
+| `list_forum_posts` | `forum:read` | List posts (metadata only, no content) | `tab?` (`recent`/`popular`/`mine`), `category_id?`, `category_name?`, `search?`, `status?`, `author_id?`, `page?`, `per_page?` |
+| `get_forum_post` | `forum:read` | One post + `content_markdown` + `content_conversion` + comments. Never registers a view | `id` **or** `slug` (exactly one), `include_comments?` |
+| `list_forum_categories` | `forum:read` | Every category with `post_count` — **read-only, no create/delete** | — |
+| `create_forum_post` | `forum:write` | New post from Markdown. **Defaults to `draft`**. admin/developer only | `title`, `content_markdown`, `category_ids?`, `category_names?`, `banner_url?`, `excerpt?`, `status?` |
+| `update_forum_post` | `forum:write` | Edit + publish/unpublish. Slug **never** changes | `id`/`slug`, `title?`, `content_markdown?` **xor** `append_markdown?`, `category_ids?`, `banner_url?`, `excerpt?`, `status?` |
+| `delete_forum_post` | `forum:write` | Permanent delete, cascades to comments/reactions/views | `id`/`slug`, `confirm: true` |
+| `add_forum_comment` | `forum:write` | Comment or reply. Mentions parsed from `content` | `post_id`/`post_slug`, `content`, `parent_id?` |
+| `delete_forum_comment` | `forum:write` | Permanent delete, cascades to replies | `id`, `confirm: true` |
+
+**Existing API keys do not have `forum:read`/`forum:write`** — the scopes shipped later and are not
+granted retroactively. A pre-existing key fails with `Permiso insuficiente: se requiere 'forum:write'`,
+and nothing in the call can fix it: the user has to add the scopes in HOT → Ajustes → API keys. Check
+`whoami().api_key_scopes` before your first forum write.
 
 > Full parameter details: [references/tool-catalog.md](references/tool-catalog.md)
 
@@ -484,6 +512,89 @@ real `status` or `due_date` change. A *backlog* request with no date reports HT0
 
 ---
 
+## Foro: Markdown, Draft-First, and an Immutable Slug
+
+The forum (`/foro`) is a separate surface from requests — no `status` machine, no backlog gate, no XP.
+Eight tools, one hard boundary, and a handful of rules that will bite anyone who guesses. Full detail:
+[references/forum-authoring.md](references/forum-authoring.md). Worked flow:
+[examples/10-forum-post-publish.md](examples/10-forum-post-publish.md).
+
+### The canonical flow
+
+```
+0. whoami                                  → check api_key_scopes has forum:write; check your role
+1. list_forum_categories                   → real names + post_count (never invent one)
+2. create_forum_post(content_markdown, …)  → lands as DRAFT by default. Read conversion.warnings
+3. get_forum_post(slug)                    → read content_markdown back; check content_conversion.lossy
+4. update_forum_post(append_markdown: …)   → additive edits (the safe kind)
+5. update_forum_post(status: "published")  → this IS the publish tool; there is no other
+6. add_forum_comment(content: "@[Nombre](uuid) …")  → mentions live in the text
+```
+
+### The rules
+
+**1. Markdown only, both directions.** `content_markdown` / `append_markdown` in, `content_markdown`
+out. **Never** BlockNote JSON on the tool surface — `forum_posts.content` is JSONB with no schema to
+catch a hallucinated block, so a bad shape is stored happily and breaks the web renderer. Passing JSON
+as `content_markdown` doesn't error either: it's parsed as literal text and you get a post whose body is
+the JSON you pasted.
+
+**2. `create_forum_post` defaults to `draft`, deliberately.** Your text just went through a converter
+that silently drops constructs. Verify with `get_forum_post`, *then*
+`update_forum_post(status: "published")`. There are no `publish_forum_post`/`unpublish_forum_post`
+tools — `update_forum_post(status:)` absorbs both. `status: "published"` sets `published_at` only if it
+was never set (an unpublish/republish keeps the original date); `status: "draft"` clears it.
+
+**3. When `content_conversion.lossy` is `true`, use `append_markdown`, not `content_markdown`.**
+`content_markdown` replaces the body wholesale. The web editor can produce colours, highlights,
+alignment, underline and `video`/`audio`/`file`/`pageBreak`/`toggleListItem` blocks — Markdown can
+represent none of them, so the Markdown you read back is a *degraded* copy. Writing it back makes the
+degradation permanent, with no undo. `append_markdown` converts only the new text and concatenates it,
+leaving everything already authored alone. Prefer it for every additive edit, lossy or not.
+
+**4. The slug never changes — not even when the title does.** `generateSlug()` runs only inside
+`create_forum_post`. `/foro/{slug}` is already shared, and `notifications.entity_id` stores the **slug**,
+not the id — regenerating it would 404 every notification already sent. Keep the slug from the create
+response (or use `id`); never derive one from a title, since it carries a random 4-char suffix.
+
+**5. Categories are read-only through MCP.** No create, no delete — the taxonomy is human-curated in the
+app. `list_forum_categories` returns `post_count` per category so you can see which ones are real
+instead of inventing names; an unknown `category_names` entry throws and lists the valid options. Also:
+`update_forum_post` takes `category_ids` only (no names), and it **replaces the post's whole category
+list** — always send the complete intended set.
+
+**6. No reaction and no view tools, on purpose.** `popularity_score` = `views ×1 + reactions ×3 +
+comments ×5 + avg_read_seconds ×0.1` plus a recency bonus, and it drives the human-facing "Populares"
+tab. A reaction is a person saying "this helped"; an agent emitting them at machine speed would weight a
+human ranking, so there's nothing to call. `get_forum_post` still *reports* reactions, read-only, and
+never registers a view or increments `view_count`. (Commenting *does* move the score, ×5 — so comment
+because there's something to say, not to bump a post.)
+
+**7. Mentions are parsed from `@[Nombre](uuid)` inside `content` — there is no `mentions` parameter.**
+What a human reads and who got notified can never disagree. Every id is checked against `profiles` for
+existence **and** `is_active`; any that fail reject the whole call, named. Resolve ids with `list_team` /
+`whoami`. And mentions only work in **comments**: post bodies are never scanned, and `@[Ana](uuid)` in
+`content_markdown` parses as a plain `@` plus a dead link.
+
+**8. An admin cannot read another author's draft, but can publish or delete it.** The SELECT policy
+(`forum_posts_select_published_or_own`, migration `00039`) has **no admin branch**; UPDATE and DELETE
+do. `forum.ts` replicates both literally. `get_forum_post` on someone else's draft returns
+`Post no encontrado o no tienes permiso para verlo.` — the same message as a nonexistent id, so ids
+can't be enumerated. **That is the gate working, not a broken tool**: don't retry it, don't work around
+it, don't report it. Relatedly, `list_forum_posts(status: "draft")` without being self-scoped
+(`tab: "mine"`, or `author_id` = your own id) silently coerces to `published` and sets
+`status_filter_coerced: true` — check that flag before saying "no hay borradores".
+
+**9. Only `admin` and `developer` can create posts** (`forum_posts_insert_admin_developer`). `designer`
+and `commercial` get `No tienes permiso para publicar en el foro. …`. Check `whoami().role` first.
+
+**10. Existing API keys lack the new scopes.** `forum:read`/`forum:write` shipped after most keys were
+created and are not granted retroactively, so a pre-existing key fails with
+`Permiso insuficiente: se requiere 'forum:write'`. No retry fixes it — the user edits the key's
+permissions in **HOT → Ajustes → API keys**. `whoami().api_key_scopes` lets you check before you write.
+
+---
+
 ## Task Resolution Flow (Working a Single Request)
 
 The most common interaction: "resolve/work on this request." This is the sequence for an **already-existing** request — see [Master Flow](#master-flow-full-project-lifecycle) below for planning a project from scratch.
@@ -612,6 +723,12 @@ Avoid these patterns:
 | Move a request with no `due_date` to `in_progress` | Rejected outright, `ERRCODE HT004` — the status never changes; work underway with no deadline is invisible to every overdue/on-time view | Pass `due_date` in the same call: `update_request_status(id, "in_progress", due_date: "YYYY-MM-DD")`, derived from `priority` (Rule 8/19) |
 | Clear the `due_date` of a request that's already `in_progress` | Rejected outright, `ERRCODE HT004` — a `note` doesn't authorize it, unlike HT002 | Move it out of `in_progress` first (`blocked`/`under_review`/`cancelled`, with its own `note`), then clear the date (Rule 19) |
 | Leave a request sitting in the backlog expecting it to show up on the board | It never will — `backlog_state` is invisible to `status`, nothing "graduates" it automatically | Refine it and flip `backlog_state: "ready"` explicitly (Rule 17) |
+| Pass BlockNote JSON as `content_markdown` | No error — it's parsed as literal text, so the post's body becomes the JSON you pasted. `forum_posts.content` is schemaless JSONB; nothing catches it | Write plain Markdown; there is no parameter anywhere on the forum surface that accepts blocks (Foro rule 1) |
+| Replace the whole post body with `content_markdown` just to add a paragraph | If the last `get_forum_post` said `content_conversion.lossy: true`, you overwrite real content with its degraded round-trip — colours, alignment, underline and media blocks gone, no undo | `update_forum_post(append_markdown: "…")` — converts only the new text and appends it (Foro rule 3) |
+| Expect the slug to follow a changed title | It never does — `generateSlug` runs only at creation. `/foro/{slug}` is already shared and `notifications.entity_id` stores the slug, so rotating it would 404 every notification sent | Keep the slug from the create response, or use `id` (Foro rule 4) |
+| Publish straight from `create_forum_post(status: "published")` | Dropped HTML, a reference link whose visible text vanished, or a split blockquote goes live *and* notifies everyone before anyone looks | Let it land as `draft` (the default), read `conversion.warnings` + `get_forum_post`, then `update_forum_post(status: "published")` (Foro rule 2) |
+| Invent a category name in `category_names` | Rejected outright, listing the real names — and there is no `create_forum_category` to fall back on | `list_forum_categories` first; `post_count` shows which ones are actually in use (Foro rule 5) |
+| Assume an admin can read another author's draft | The SELECT policy has no admin branch (UPDATE/DELETE do) — the read returns the same "not found" as a nonexistent id, by design | Accept it; the author publishes or pastes the content. Also check `status_filter_coerced` before concluding there are no drafts (Foro rule 8) |
 
 > Full anti-patterns: [references/common-mistakes.md](references/common-mistakes.md)
 
@@ -621,6 +738,7 @@ Avoid these patterns:
 
 ### Reference Documentation
 - [Tool Catalog](references/tool-catalog.md) — Every tool with full params and examples
+- [Forum Authoring](references/forum-authoring.md) — The supported Markdown subset, conversion warnings, `append_markdown` vs `content_markdown`, the immutable slug, draft/publish, why there are no reaction/view/category tools
 - [Backlog and Readiness](references/backlog-and-readiness.md) — The HT003 gate, the "born ready" criterion, mandatory change notes, the HT004 due-date gate
 - [Status Transitions](references/status-transitions.md) — State machines and rules
 - [GitHub Integration](references/github-integration.md) — Branch naming, auto-close, trazabilidad
@@ -637,3 +755,4 @@ Avoid these patterns:
 - [Incorrect Usage](examples/07-incorrect-usage.md) — What NOT to do (with corrections)
 - [Backlog Grooming](examples/08-backlog-grooming.md) — Refining and flipping requests from `backlog` to `ready`
 - [Blocked With Reason](examples/09-blocked-with-reason.md) — Blocking a request and changing a due date, both with a justification note
+- [Forum Post Publish](examples/10-forum-post-publish.md) — `whoami` → categories → draft → verify the conversion → `append_markdown` → publish → comment with a mention

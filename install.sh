@@ -88,11 +88,12 @@ else
     "references/tool-catalog.md" "references/status-transitions.md"
     "references/github-integration.md" "references/common-mistakes.md"
     "references/naming-conventions.md" "references/backlog-and-readiness.md"
+    "references/forum-authoring.md"
     "examples/01-single-request.md" "examples/02-milestone-with-requests.md"
     "examples/03-full-project-flow.md" "examples/04-bug-hotfix-flow.md"
     "examples/05-milestone-groups.md" "examples/06-progress-tracking.md"
     "examples/07-incorrect-usage.md" "examples/08-backlog-grooming.md"
-    "examples/09-blocked-with-reason.md"
+    "examples/09-blocked-with-reason.md" "examples/10-forum-post-publish.md"
   )
   mkdir -p "$SKILL_DST/references" "$SKILL_DST/examples"
   for f in "${FILES[@]}"; do

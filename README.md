@@ -1,7 +1,7 @@
 # HOT MCP Workflows
 
 **Status**: Production Ready
-**Last Updated**: 2026-09-10
+**Last Updated**: 2026-10-27
 **Repo**: `Tucan-Marketing-Digital/hot-mcp-skill`
 **Instalación**: ver abajo
 
@@ -73,6 +73,39 @@ Claude Code automatically discovers this skill when you mention:
 - in progress sin fecha
 - no puedo pasar a en progreso
 
+### Forum Keywords
+- foro
+- forum post
+- publicar post
+- crear post
+- forum comment
+- categorías del foro
+- categorias del foro
+- comentar en el foro
+- publicar en el foro
+- borrador del foro
+- forum draft
+- list_forum_posts
+- get_forum_post
+- create_forum_post
+- update_forum_post
+- delete_forum_post
+- add_forum_comment
+- delete_forum_comment
+- list_forum_categories
+- forum:read
+- forum:write
+- content_markdown
+- append_markdown
+- content_conversion
+- lossy
+- slug del post
+- markdown a blocknote
+- blocknote
+- mención en el foro
+- popularity_score
+- Populares
+
 ### GitHub Integration Keywords
 - github issue
 - github branch
@@ -127,6 +160,7 @@ Provides comprehensive workflows and best practices for the HOT Platform MCP too
 - **Checklists** — Acceptance criteria as definition of done
 - **Progress Tracking** — Comments, mentions, blocker management
 - **Project Planning** — Full lifecycle from milestone groups to sequential execution
+- **Forum Authoring** — Markdown in and out (never BlockNote JSON), the supported Markdown subset and its warning codes, the draft-first publish flow, `append_markdown` vs `content_markdown` when `content_conversion.lossy` is true, the immutable slug, read-only categories, mentions in comments, and why there are no reaction/view tools
 - **Anti-Patterns** — Common mistakes with corrections
 
 ---
@@ -224,10 +258,11 @@ querés fijar la skill a una versión distinta en ese repo.
 
 ```
 hot-mcp-workflows/
-├── SKILL.md                          # Main entry point (incl. "Every Request Is Born Assigned and Dated", the backlog/readiness gate)
+├── SKILL.md                          # Main entry point (incl. "Every Request Is Born Assigned and Dated", the backlog/readiness gate, the Foro rules)
 ├── README.md                         # This file (auto-discovery)
 ├── references/
-│   ├── tool-catalog.md               # All 25 tools with full params
+│   ├── tool-catalog.md               # All 33 tools with full params
+│   ├── forum-authoring.md            # Markdown subset + warning codes, append vs replace, content_conversion.lossy, immutable slug, draft/publish, read-only categories
 │   ├── backlog-and-readiness.md      # HT003 status gate, "born ready" criterion, mandatory change notes (HT001/HT002), due-date gate for in_progress (HT004)
 │   ├── status-transitions.md         # State machines and rules
 │   ├── github-integration.md         # Branch naming, auto-close
@@ -242,5 +277,6 @@ hot-mcp-workflows/
     ├── 06-progress-tracking.md       # Checklists, comments, blockers
     ├── 07-incorrect-usage.md         # What NOT to do
     ├── 08-backlog-grooming.md        # Refining and flipping backlog → ready
-    └── 09-blocked-with-reason.md     # Blocking + due_date changes with mandatory notes
+    ├── 09-blocked-with-reason.md     # Blocking + due_date changes with mandatory notes
+    └── 10-forum-post-publish.md      # Forum: categories → draft → verify conversion → append → publish → comment
 ```

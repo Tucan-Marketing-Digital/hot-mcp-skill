@@ -361,12 +361,12 @@ create_github_issue_branch(request_id: "req-uuid")
 
 ### Wrong
 ```
-// Remembering "my UUID is 8b9d3061-..." from a previous session
+// Remembering "my UUID is a1b2c3d4-..." from a previous session
 create_request(
   title: "Fix login bug",
   description: "...",
   priority: "high",
-  assignee_ids: ["8b9d3061-878a-4764-98c3-8ad9804acee5"]  // stale, hardcoded
+  assignee_ids: ["a1b2c3d4-0000-4000-8000-000000000000"]  // stale, hardcoded
 )
 ```
 
@@ -790,6 +790,274 @@ request with no date reports HT003 (mark it `ready` first), not HT004 — the Re
 
 ---
 
+## Mistake 26: Passing BlockNote JSON to a forum tool
+
+### Wrong
+```
+create_forum_post(
+  title: "Runbook de despliegue",
+  content_markdown: '[{"type":"paragraph","content":[{"type":"text","text":"Requisitos","styles":{}}]}]'
+)
+```
+
+### Why it fails
+It doesn't fail loudly — that's the problem. `content_markdown` is a **string of Markdown**, and the
+converter will happily parse that JSON as literal text: the post ends up containing one paragraph whose
+visible content is `[{"type":"paragraph",...}]`. No error, no warning, a corrupted post.
+
+The forum stores content as BlockNote JSONB, but **the MCP tool surface never exposes it** — not as a
+parameter, not in a response. `forum_posts.content` has no DB-level schema (it's JSONB), so there is
+nothing to catch a hallucinated block type; a bad shape is stored happily and breaks the web renderer
+instead. That's precisely why the Markdown boundary exists
+(`packages/shared/src/forum-markdown.ts` is the only place the translation happens).
+
+### Correct
+```
+create_forum_post(
+  title: "Runbook de despliegue",
+  content_markdown: "## Requisitos\n\n- Node 22\n- Acceso a Supabase\n"
+)
+```
+
+### Prevention
+Write Markdown. Read Markdown. There is no parameter anywhere in the forum tool surface that accepts
+blocks, so if you find yourself constructing `{ "type": ..., "props": ... }`, you've taken a wrong turn.
+See [forum-authoring.md](forum-authoring.md) for the exact supported subset.
+
+---
+
+## Mistake 27: Replacing the whole post body just to add a paragraph
+
+### Wrong
+```
+get_forum_post(slug: "runbook-despliegue-7k2f")
+→ { content_markdown: "## Requisitos\n…", content_conversion: { lossy: true, dropped_block_types: ["video"] } }
+
+update_forum_post(
+  slug: "runbook-despliegue-7k2f",
+  content_markdown: <the markdown just read> + "\n\n## Rollback\n\n1. …"
+)
+```
+
+### Why it fails
+`content_markdown` **replaces** `forum_posts.content` wholesale. When the preceding `get_forum_post`
+reported `content_conversion.lossy: true`, the Markdown you just read is a *degraded* copy of the post —
+the embedded video is now a text link, the highlighted paragraph lost its background colour, the
+underline and the centring are gone. Writing it back makes the degradation permanent. There is no undo
+and no version history on `forum_posts.content`.
+
+The web editor can produce `video`/`audio`/`file`/`pageBreak`/`toggleListItem` blocks and
+`textColor`/`backgroundColor`/`textAlignment`/`underline` styling. Markdown can represent **none** of
+them. `lossy: true` is the converter telling you exactly that.
+
+### Correct
+```
+update_forum_post(
+  slug: "runbook-despliegue-7k2f",
+  append_markdown: "## Rollback\n\n1. Revertir el deploy desde el panel\n2. …"
+)
+```
+
+`append_markdown` converts **only** the new text and concatenates its blocks after the existing ones.
+Everything already authored is untouched.
+
+### Prevention
+Make `append_markdown` your default for any additive edit, lossy or not — one call, nothing to
+mis-transcribe. Reserve `content_markdown` for a rewrite the user actually asked for, and only after
+`get_forum_post` reported `lossy: false`.
+
+Note the cosmetic trap that tempts the full replace: round-tripped Markdown separates top-level blocks
+with a blank line, so a tight list comes back loose. Same blocks, same render — not a loss, and not
+worth a rewrite.
+
+---
+
+## Mistake 28: Expecting the slug to follow the title
+
+### Wrong
+```
+update_forum_post(slug: "runbook-staging-7k2f", title: "Runbook: despliegue a producción")
+→ success
+
+get_forum_post(slug: "runbook-despliegue-a-produccion-7k2f")
+→ Post no encontrado o no tienes permiso para verlo.
+```
+
+### Why it fails
+`generateSlug()` runs **only** inside `create_forum_post`. `update_forum_post` never touches `slug`,
+even when `title` changes — deliberately:
+
+- `/foro/{slug}` is the public URL people have already shared and bookmarked.
+- `notifications.entity_id` stores the **slug**, not the post id (`lib/forum-notifications.ts`), and
+  `getNotificationUrl` builds `/foro/{entity_id}`. A regenerated slug would 404 every notification
+  already sent for that post.
+
+### Correct
+```
+update_forum_post(slug: "runbook-staging-7k2f", title: "Runbook: despliegue a producción")
+get_forum_post(slug: "runbook-staging-7k2f")      // the original slug still resolves
+// or, immune to the whole question:
+get_forum_post(id: "post-uuid")
+```
+
+### Prevention
+Record the `slug` (and `id`) from the `create_forum_post` response and keep using it for the rest of the
+session. Never derive a slug from a title — not even the original title, since the slug carries a random
+4-char suffix you cannot reconstruct.
+
+> The web app's `updateForumPost` in `lib/services/requests.ts` *does* regenerate the slug on a title
+> change. That's a known bug on the web side. The MCP tools don't replicate it, and shouldn't be
+> "aligned" to it.
+
+---
+
+## Mistake 29: Publishing without reviewing the conversion
+
+### Wrong
+```
+create_forum_post(
+  title: "Guía de migraciones",
+  content_markdown: "<div class='warning'>Leer primero</div>\n\nVer [la doc][d].\n\n[d]: https://…",
+  status: "published"
+)
+```
+
+### Why it fails
+`status` defaults to `"draft"` **on purpose**: the text has just gone through a converter that silently
+drops constructs Markdown-to-BlockNote can't map. In the call above, two things were lost before anyone
+could see them:
+
+- the `<div>` block vanished (`html_dropped`)
+- `[la doc][d]` is a reference-style link — **its visible text vanished too**, leaving `Ver .`
+  (`unsupported_markdown_node`, `"linkReference"`)
+
+And because `status: "published"` was passed, `post_published` notifications already went out pointing
+at the broken post.
+
+### Correct
+```
+create_forum_post(title: "Guía de migraciones", content_markdown: "…")   // draft (the default)
+→ { slug: "guia-de-migraciones-3x9p", conversion: { warnings: [...] } }   // ← read these
+
+get_forum_post(slug: "guia-de-migraciones-3x9p")
+→ content_markdown: "…"   // ← read this: is it what you meant?
+   content_conversion: { lossy: false, warnings: [] }
+
+update_forum_post(slug: "guia-de-migraciones-3x9p", status: "published")
+```
+
+### Prevention
+Treat the draft default as a mandatory review step, not a formality. Two habits cover it:
+
+1. **Read `conversion.warnings`** on every write — a non-empty array means your Markdown didn't fully
+   land.
+2. **Read the post back with `get_forum_post`** before publishing, and look at `content_markdown`.
+
+Also: use inline links (`[text](url)`), never reference links; strip HTML; and never start the Markdown
+with `---` on line 1 (it's rejected as frontmatter). There are no `publish_forum_post`/`unpublish_forum_post`
+tools — `update_forum_post(status:)` is both.
+
+---
+
+## Mistake 30: Inventing a category name
+
+### Wrong
+```
+create_forum_post(
+  title: "Runbook de despliegue",
+  content_markdown: "…",
+  category_names: ["Runbooks"]        // sounds right, doesn't exist
+)
+→ No existen las categorías: Runbooks. Categorías válidas: Anuncios, Debate, Preguntas, Tutoriales.
+```
+
+### Why it fails
+**Categories are read-only through MCP.** There is no `create_forum_category` and no delete — the
+taxonomy is curated by humans in the app. The error above is the tool's *only* guardrail against a
+hallucinated category, and it exists because the alternative (silently ignoring the name) would produce
+an uncategorised post nobody notices.
+
+### Correct
+```
+list_forum_categories()
+→ { total: 4, categories: [
+    { id: "cat-anuncios",   name: "Anuncios",   post_count: 12 },
+    { id: "cat-debate",     name: "Debate",     post_count: 0  },
+    { id: "cat-preguntas",  name: "Preguntas",  post_count: 5  },
+    { id: "cat-tutoriales", name: "Tutoriales", post_count: 3  }
+  ]}
+
+create_forum_post(title: "…", content_markdown: "…", category_names: ["Tutoriales"])
+```
+
+### Prevention
+Call `list_forum_categories` before any `category_names`/`category_ids`. `post_count` is there precisely
+so you can tell a real, in-use category from a dormant one. If none fits, say so out loud and pick the
+closest — don't retry the error with another guess, and don't ask the tool to create one.
+
+Two more traps on the same parameter:
+
+- `update_forum_post` takes **`category_ids` only** — no `category_names`. Resolve names to UUIDs first.
+- `category_ids` on `update_forum_post` **replaces the whole list** (delete-then-insert). Passing one id
+  drops the rest; `[]` clears them all. Always send the complete intended set.
+
+---
+
+## Mistake 31: Assuming an admin can read another author's draft
+
+### Wrong
+```
+// You're an admin, reviewing a colleague's unpublished post
+get_forum_post(id: "other-authors-draft-uuid")
+→ Post no encontrado o no tienes permiso para verlo.
+// …retried with the slug, then reported the tool as broken
+```
+
+### Why it fails
+It's not broken. `forum.ts` replicates the RLS policies in
+`supabase/migrations/00039_forum_module.sql` **literally**, including their asymmetry:
+
+| Operation | Policy | Admin branch? |
+|---|---|---|
+| SELECT | `forum_posts_select_published_or_own` | **No** — published posts, or your own |
+| UPDATE | `forum_posts_update_author_or_admin` | **Yes** |
+| DELETE | `forum_posts_delete_author_or_admin` | **Yes** |
+
+So **an admin cannot read another author's draft, but can publish or delete it**:
+
+```
+get_forum_post(id: "other-authors-draft-uuid")                      → not found
+update_forum_post(id: "other-authors-draft-uuid", status: "published") → success
+delete_forum_post(id: "other-authors-draft-uuid", confirm: true)       → success
+```
+
+Surprising, faithful to the DB, and deliberately not "fixed" in the tool layer. The not-found message is
+also **identical** to the one for a nonexistent id, on purpose — otherwise a caller could enumerate post
+UUIDs by diffing error messages.
+
+### Correct
+Accept the gate. If an admin needs to review a draft, the **author** publishes it or pastes the content.
+Don't retry the read, don't try `slug` instead of `id`, don't report it as a bug.
+
+### Prevention
+The same floor hides drafts from listing, in a way that's easy to misread:
+
+```
+list_forum_posts(status: "draft")
+→ { status_filter_coerced: true, posts: [...only published ones...] }
+```
+
+`list_forum_posts` ORs `status.eq.published,author_id.eq.<you>` into every query, and asking for
+`status: "draft"`/`"all"` without being self-scoped (`tab: "mine"`, or `author_id` = your own id)
+silently coerces the filter to `published` and sets `status_filter_coerced: true`. **Check that flag**
+before telling the user there are no drafts. To see your own:
+
+```
+list_forum_posts(tab: "mine", status: "all")
+```
+
+---
+
 ## Quick Reference: Correct Order
 
 **Working an existing request** (already created — the most common flow):
@@ -836,4 +1104,15 @@ request with no date reports HT003 (mark it `ready` first), not HT004 — the Re
 3. create_milestone_group(project_id, name: "Fase N")  ← Organizational container
 4. create_milestone (×N, with group_id + depends_on as needed)
 5. create_request per milestone (as above)
+```
+
+**Publishing a forum post** (Markdown only, draft first — Mistakes 26–31):
+```
+0. whoami                                 ← Check api_key_scopes has forum:write, and your role
+1. list_forum_categories                  ← Real names + post_count. Never invent one
+2. create_forum_post (content_markdown)   ← Lands as DRAFT by default. Read conversion.warnings
+3. get_forum_post(slug)                   ← Verify content_markdown + content_conversion.lossy
+4. update_forum_post(append_markdown)     ← Additive edits. NEVER content_markdown when lossy: true
+5. update_forum_post(status: "published")  ← This is the publish tool; there is no other
+6. add_forum_comment                      ← Mentions as @[Nombre](uuid) IN the text, ids from list_team
 ```

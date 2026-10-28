@@ -1,6 +1,7 @@
 # HOT MCP Tool Catalog
 
-Complete reference for all 25 HOT Platform MCP tools.
+Complete reference for all 33 HOT Platform MCP tools — 25 request/project/milestone/GitHub tools plus
+the 8 forum tools.
 
 ---
 
@@ -867,3 +868,475 @@ create_github_pr(
 **Persists to**: Updates `request_github_links` with `pr_url`, `pr_number`, `pr_state`
 
 **Auto-close flow**: When PR is merged → GitHub closes the issue → traceability complete.
+
+---
+
+## Forum Tools
+
+Eight tools over the HOT forum (`/foro`). **Content is always plain Markdown on this surface — never
+BlockNote JSON.** Read [forum-authoring.md](forum-authoring.md) before your first write: it covers the
+supported Markdown subset, the warning codes, `append_markdown` vs `content_markdown`, the immutable
+slug and the draft/publish semantics.
+
+Two scopes gate everything here, and **existing API keys don't have them** — they were added after most
+keys were created, and scopes are not granted retroactively. A key without them fails with
+`Permiso insuficiente: se requiere 'forum:write'` (or `'forum:read'`), which no retry can fix: the user
+has to add the scopes in HOT → Ajustes → API keys. `whoami().api_key_scopes` tells you before you try.
+
+| Tool | Scope | Role |
+|------|-------|------|
+| `list_forum_posts` | `forum:read` | any |
+| `get_forum_post` | `forum:read` | any |
+| `list_forum_categories` | `forum:read` | any |
+| `create_forum_post` | `forum:write` | `admin` / `developer` only |
+| `update_forum_post` | `forum:write` | author or `admin` |
+| `delete_forum_post` | `forum:write` | author or `admin` |
+| `add_forum_comment` | `forum:write` | any (post must be published or your own draft) |
+| `delete_forum_comment` | `forum:write` | author or `admin` |
+
+> ⚠️ **The read/write asymmetry on drafts is real and intentional.** The SELECT policy
+> (`forum_posts_select_published_or_own`, `supabase/migrations/00039_forum_module.sql`) has **no admin
+> branch**, while UPDATE/DELETE do. So an admin who is not the author **cannot read** someone else's
+> draft, but **can publish or delete it**. `forum.ts` replicates both policies literally. A "not found"
+> on a draft you know exists is the gate working, not a bug.
+
+---
+
+### `list_forum_posts`
+
+List forum posts — metadata only, no content. Use `get_forum_post` for the body.
+
+**Parameters**:
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `tab` | enum | No (default: `"recent"`) | `recent` (newest `published_at` first), `popular` (highest `popularity_score` first), `mine` (only your own posts, drafts included) |
+| `category_id` | UUID | No | Filter by category UUID |
+| `category_name` | string | No | Filter by category name, resolved case-insensitively. **Ignored when `category_id` is also set.** An unknown name throws, listing the valid ones |
+| `search` | string | No (max 200) | Free-text `ILIKE` over `title` and `search_text` (the trigger-maintained plain text of the content). `, ( ) * \ " :` are stripped from the term first |
+| `status` | enum | No (default: `"published"`) | `all`, `draft`, `published` — see the coercion note below |
+| `author_id` | UUID | No | Filter by author UUID |
+| `page` | integer | No (default: 1) | Page number (1-based) |
+| `per_page` | integer | No (default: 12, max 50) | Results per page |
+
+**Returns**:
+```json
+{
+  "total": 37,
+  "page": 1,
+  "per_page": 12,
+  "status_filter_coerced": false,
+  "posts": [
+    {
+      "id": "post-uuid",
+      "slug": "guia-de-despliegue-a1b2",
+      "title": "Guía de despliegue",
+      "excerpt": "…",
+      "banner_url": null,
+      "status": "published",
+      "published_at": "2026-10-20T14:02:00Z",
+      "created_at": "2026-10-19T09:11:00Z",
+      "reading_time_minutes": 6,
+      "view_count": 84,
+      "popularity_score": 212.5,
+      "author": { "id": "user-uuid", "name": "Ana García", "role": "developer" },
+      "categories": [{ "id": "cat-uuid", "name": "Tutoriales", "color": "#22c55e", "icon": "book" }],
+      "reaction_count": 7,
+      "comment_count": 3,
+      "url": "/foro/guia-de-despliegue-a1b2"
+    }
+  ]
+}
+```
+
+**`status_filter_coerced`** — the one field that will surprise you. A security floor
+(`status.eq.published,author_id.eq.<you>`) is ORed into every query regardless of your other filters.
+On top of that, asking for `status: "draft"` or `"all"` **without being self-scoped** (`tab: "mine"`, or
+`author_id` equal to your own id) silently rewrites the filter to `published` and sets this flag to
+`true`. Check it before reporting "no drafts found" — you may simply not be allowed to see them.
+
+**Examples**:
+```
+list_forum_posts()                                              // latest published
+list_forum_posts(tab: "popular", per_page: 5)                    // the "Populares" tab, top 5
+list_forum_posts(tab: "mine", status: "all")                     // my posts, drafts included
+list_forum_posts(category_name: "Tutoriales")                    // by category name
+list_forum_posts(search: "despliegue")                           // title + content search
+list_forum_posts(status: "draft")                                // → coerced to published, flag true
+```
+
+**Errors**:
+- `Permiso insuficiente: se requiere 'forum:read'`
+- `No existe la categoría "X". Categorías válidas: …` — unknown `category_name`
+
+---
+
+### `get_forum_post`
+
+Get one post by `id` **or** `slug` (exactly one), with its content as Markdown and, by default, the
+nested comment thread.
+
+**Parameters**:
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | UUID | Exactly one of `id`/`slug` | Post UUID |
+| `slug` | string | Exactly one of `id`/`slug` | Post slug (the `/foro/{slug}` path segment) |
+| `include_comments` | boolean | No (default: `true`) | Include the nested comment tree |
+
+**Returns** (abridged):
+```json
+{
+  "id": "post-uuid",
+  "slug": "guia-de-despliegue-a1b2",
+  "title": "Guía de despliegue",
+  "content_markdown": "## Requisitos\n\n- Node 22\n…",
+  "content_conversion": {
+    "lossy": false,
+    "dropped_block_types": [],
+    "warnings": []
+  },
+  "excerpt": "…",
+  "banner_url": null,
+  "status": "published",
+  "published_at": "2026-10-20T14:02:00Z",
+  "created_at": "…", "updated_at": "…",
+  "reading_time_minutes": 6,
+  "view_count": 84,
+  "popularity_score": 212.5,
+  "author": { "id": "user-uuid", "name": "Ana García", "role": "developer" },
+  "categories": [ … ],
+  "reactions": [{ "emoji": "🔥", "count": 4, "reacted_by_me": false }],
+  "reaction_count": 7,
+  "url": "/foro/guia-de-despliegue-a1b2",
+  "comments": [
+    {
+      "id": "comment-uuid",
+      "content": "¿Esto aplica a staging?",
+      "mentions": null,
+      "created_at": "…",
+      "author": { "id": "…", "name": "Ana García", "role": "developer" },
+      "replies": [ … ]
+    }
+  ],
+  "comment_count": 3
+}
+```
+
+Root comments come back **newest first**; replies within a thread are **chronological**.
+
+**Important**:
+- **`content_conversion.lossy: true` means the Markdown you're holding is a degraded view** of the
+  stored post — colours, alignment, underline or embedded media could not be represented. Your next
+  `update_forum_post` must use `append_markdown`, **never** `content_markdown`, or you overwrite that
+  content with the lossy round-trip. Full table of what triggers it:
+  [forum-authoring.md](forum-authoring.md#reading-it-back-content_conversionlossy).
+- **Never registers a view.** No `forum_views` row, no `view_count` increment — this is an agent reading,
+  not a human reading, and `popularity_score` is a human signal.
+- `reactions` is read-only here. There is no tool to add one, on purpose.
+
+**Errors**:
+- `Permiso insuficiente: se requiere 'forum:read'`
+- `Debes proporcionar exactamente uno de id/slug.` — both or neither
+- `Post no encontrado o no tienes permiso para verlo.` — a nonexistent id **and** someone else's draft
+  return the *same* message, deliberately, so ids can't be enumerated. This includes admins reading
+  another author's draft.
+
+---
+
+### `list_forum_categories`
+
+List every forum category with its post count. **Call this before any `category_names`/`category_ids`.**
+
+**Parameters**: None
+
+**Returns**:
+```json
+{
+  "total": 4,
+  "categories": [
+    { "id": "cat-uuid", "name": "Anuncios",   "color": "#f97316", "icon": "megaphone", "post_count": 12 },
+    { "id": "cat-uuid", "name": "Debate",     "color": "#6366f1", "icon": null,        "post_count": 0  },
+    { "id": "cat-uuid", "name": "Preguntas",  "color": "#eab308", "icon": "help",      "post_count": 5  },
+    { "id": "cat-uuid", "name": "Tutoriales", "color": "#22c55e", "icon": "book",      "post_count": 3  }
+  ]
+}
+```
+
+Ordered by `name`. `post_count` is there so you can tell a real, in-use category from a dormant one
+instead of inventing a plausible-sounding name.
+
+**Important**: **Categories are read-only through MCP.** There is no `create_forum_category` and no
+delete — the taxonomy is curated by humans in the app. If the category the user wants doesn't exist,
+say so and pick the closest existing one; don't work around it.
+
+**Errors**: `Permiso insuficiente: se requiere 'forum:read'`
+
+---
+
+### `create_forum_post`
+
+Create a forum post from Markdown. **Defaults to `draft`.**
+
+**Parameters**:
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `title` | string | Yes | 3–200 chars. `El título debe tener al menos 3 caracteres` below that |
+| `content_markdown` | string | Yes | 1–100 000 chars of Markdown. Converted to BlockNote server-side |
+| `category_ids` | UUID[] | No (max 5) | Category UUIDs |
+| `category_names` | string[] | No (max 5) | Category names, case-insensitive. Merged with `category_ids` and deduplicated. **Run `list_forum_categories` first** |
+| `banner_url` | URL \| null | No | Banner image URL |
+| `excerpt` | string | No (max 300) | Custom excerpt. Omitted → generated from the content |
+| `status` | enum | No (**default: `"draft"`**) | `draft`, `published` |
+
+**Returns**:
+```json
+{
+  "success": true,
+  "id": "post-uuid",
+  "slug": "guia-de-despliegue-a1b2",
+  "status": "draft",
+  "url": "/foro/guia-de-despliegue-a1b2",
+  "reading_time_minutes": 6,
+  "excerpt": "…",
+  "categories": [ … ],
+  "conversion": { "blocks_created": 24, "warnings": [] },
+  "notifications_dispatched": false,
+  "message": "Borrador creado correctamente."
+}
+```
+
+**Example**:
+```
+list_forum_categories()            // → "Tutoriales" exists
+
+create_forum_post(
+  title: "Guía de despliegue a staging",
+  content_markdown: "## Requisitos\n\n- Node 22\n- Acceso a Supabase\n\nVer [el runbook](https://…).",
+  category_names: ["Tutoriales"],
+  excerpt: "Pasos para desplegar a staging sin romper nada."
+)
+→ draft. Then: get_forum_post(slug) → verify → update_forum_post(slug, status: "published")
+```
+
+**Important**:
+- **`conversion.warnings` is not decoration.** It's the converter telling you part of your Markdown
+  didn't land — reference-style links lose their visible text, HTML is dropped, a multi-paragraph
+  blockquote splits. Read it, and read `content_markdown` back with `get_forum_post` before publishing.
+- **The draft default is the review step.** Verify, then `update_forum_post(status: "published")`.
+- The **slug is generated here and never again** — `update_forum_post` never regenerates it, even on a
+  title change, because it's the public URL and what `notifications.entity_id` stores.
+- `@[Nombre](uuid)` in `content_markdown` is **not** a mention — no `parseMentions` runs on post bodies.
+  It renders as a dead link. Mention people in a comment instead.
+- Markdown starting with `---` on line 1 is rejected as frontmatter; >2000 blocks is rejected too.
+
+**Errors**:
+- `Permiso insuficiente: se requiere 'forum:write'`
+- `No tienes permiso para publicar en el foro. Solo administradores y desarrolladores pueden crear publicaciones.` — `designer`/`commercial`
+- `No existen las categorías: X. Categorías válidas: …`
+- `El Markdown comienza con un bloque de frontmatter …`
+- `El Markdown genera N bloques, por encima del límite de 2000. …`
+- `No se pudo generar un slug único después de 3 intentos: …` (rare — a random 4-char suffix collided 3×)
+- `La publicación se creó, pero no se pudieron asignar las categorías: …` — the post **exists**; fix the
+  categories with `update_forum_post(category_ids: [...])`, don't create it again
+
+---
+
+### `update_forum_post`
+
+Update a post. Also the publish/unpublish tool — **there is no separate one.**
+
+**Parameters**:
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | UUID | Exactly one of `id`/`slug` | Post UUID |
+| `slug` | string | Exactly one of `id`/`slug` | Post slug |
+| `title` | string | No | 3–200 chars. **Does not change the slug** |
+| `content_markdown` | string | No (1–100 000) | **REPLACES** the content entirely. Mutually exclusive with `append_markdown` |
+| `append_markdown` | string | No (1–100 000) | Converts only this text and **appends** its blocks. Mutually exclusive with `content_markdown` |
+| `category_ids` | UUID[] | No (max 5) | **Replaces the post's full category list** (delete-then-insert). No `category_names` here — resolve with `list_forum_categories` |
+| `banner_url` | URL \| null | No | |
+| `excerpt` | string \| null | No (max 300) | An explicit value — including `null` — always wins over the auto-generated one |
+| `status` | enum | No | `draft`, `published` |
+
+**Returns**: same shape as `create_forum_post`, with `message: "Publicación actualizada correctamente."`
+and `conversion: null` when the content wasn't touched.
+
+**Important**:
+- **`append_markdown` when the last `get_forum_post` said `lossy: true`.** `content_markdown` would
+  write the degraded round-trip back over the real content — colours, alignment, underline and media
+  blocks gone, no undo.
+- **The slug is never regenerated**, even when `title` changes. `/foro/{slug}` is already shared, and
+  `notifications.entity_id` stores the slug — rotating it 404s every notification already sent.
+- `status: "published"` sets `published_at` **only if it was never set**, preserving the original date
+  across an unpublish/republish. `status: "draft"` clears it.
+- `notifications_dispatched` is `true` only on a genuine `draft → published` transition. `false` can
+  also just mean the notification hop failed (it's fire-and-log) — the post is already saved either way.
+- Changing content recomputes `reading_time_minutes` and regenerates `excerpt` **unless** you pass
+  `excerpt` in the same call.
+- **Admins can edit and publish a draft they cannot read.** UPDATE has an admin branch; SELECT doesn't.
+
+**Examples**:
+```
+// Add a section to a post whose round-trip was lossy — the safe edit
+update_forum_post(slug: "guia-de-despliegue-a1b2", append_markdown: "\n## Rollback\n\n1. …")
+
+// Publish a verified draft
+update_forum_post(slug: "guia-de-despliegue-a1b2", status: "published")
+
+// Retitle — the URL stays guia-de-despliegue-a1b2
+update_forum_post(slug: "guia-de-despliegue-a1b2", title: "Guía de despliegue (v2)")
+
+// Replace the whole body — only after get_forum_post reported lossy: false
+update_forum_post(id: "post-uuid", content_markdown: "# Reescrito\n\n…")
+```
+
+**Errors**:
+- `Permiso insuficiente: se requiere 'forum:write'`
+- `content_markdown y append_markdown son mutuamente excluyentes: usa solo uno por llamada.`
+- `Debes proporcionar exactamente uno de id/slug.`
+- `Post no encontrado.` — note this is the *plain* message: unlike the read tools, update resolves the
+  post before checking permission
+- `No tienes permiso para editar este post. Debes ser su autor o administrador.`
+- `No se proporcionó ningún campo para actualizar.` — you passed only `id`/`slug`
+- `No se pudieron actualizar las categorías: …`
+
+---
+
+### `delete_forum_post`
+
+Permanently delete a post. Requires `confirm: true`.
+
+**Parameters**:
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | UUID | Exactly one of `id`/`slug` | Post UUID |
+| `slug` | string | Exactly one of `id`/`slug` | Post slug |
+| `confirm` | `true` | **Yes** | Must be literally `true` |
+
+**Returns**:
+```json
+{
+  "success": true,
+  "id": "post-uuid",
+  "slug": "guia-de-despliegue-a1b2",
+  "deleted_comments": 3,
+  "deleted_reactions": 7,
+  "message": "Publicación eliminada correctamente."
+}
+```
+
+Counts are taken **before** the delete, so they tell you what went with it.
+
+**Important**:
+- Cascades (DB-level `ON DELETE CASCADE`) to comments, reactions, views and category links.
+- **Does not clean up storage images** — the `sweep-orphan-files` cron handles those separately.
+- Irreversible. There is no soft delete. Prefer `update_forum_post(status: "draft")` when the user wants
+  a post "taken down" rather than erased.
+- Admins can delete anyone's post, including a draft they could never read.
+
+**Errors**: `Permiso insuficiente: se requiere 'forum:write'` · `Debes proporcionar exactamente uno de id/slug.` ·
+`Post no encontrado.` · `No tienes permiso para eliminar este post. Debes ser su autor o administrador.`
+
+---
+
+### `add_forum_comment`
+
+Comment on a post, or reply to a comment via `parent_id`.
+
+**Parameters**:
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `post_id` | UUID | Exactly one of `post_id`/`post_slug` | Post UUID |
+| `post_slug` | string | Exactly one of `post_id`/`post_slug` | Post slug |
+| `content` | string | Yes | 1–2000 chars. Mentions are parsed from it — **there is no `mentions` param** |
+| `parent_id` | UUID | No | Comment being replied to. **Must belong to the same post** |
+
+**Returns**:
+```json
+{
+  "success": true,
+  "id": "comment-uuid",
+  "post_id": "post-uuid",
+  "post_slug": "guia-de-despliegue-a1b2",
+  "parent_id": null,
+  "mentioned_user_ids": ["user-uuid"],
+  "notifications_dispatched": true,
+  "message": "Comentario agregado correctamente."
+}
+```
+
+**Example**:
+```
+whoami()    → { id: "my-uuid", name: "Carlos Rivas" }
+list_team() → [{ id: "ana-uuid", name: "Ana García", role: "developer" }, …]
+
+add_forum_comment(
+  post_slug: "guia-de-despliegue-a1b2",
+  content: "@[Ana García](ana-uuid) ¿el paso 3 aplica también a staging?"
+)
+→ mentioned_user_ids: ["ana-uuid"]
+```
+
+**Important**:
+- **Mentions come from `@[Nombre](uuid)` in `content`, nothing else** — so the text a human reads and the
+  notifications that went out can never disagree. Every id is validated against `profiles` for existence
+  **and** `is_active: true`; any that fail reject the whole call, named. Resolve ids with `list_team` /
+  `whoami` — don't guess.
+- You may comment on a **published** post or on **your own draft**. This is a tool-level rule, stricter
+  than RLS (which doesn't constrain comment inserts at all).
+- Recalculates `popularity_score` (comments weigh ×5, the heaviest term). Comment because there's
+  something to say, not to bump a post.
+
+**Errors**:
+- `Permiso insuficiente: se requiere 'forum:write'`
+- `Debes proporcionar exactamente uno de post_id/post_slug.`
+- `Post no encontrado.`
+- `No puedes comentar en una publicación que no es pública ni es tuya.`
+- `El comentario padre no existe o no pertenece a esta publicación.`
+- `Mencionaste usuario(s) que no existen o están inactivos: <uuids>. Verifica los UUID.`
+
+---
+
+### `delete_forum_comment`
+
+Permanently delete a comment. Requires `confirm: true`.
+
+**Parameters**:
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | UUID | Yes | Comment UUID |
+| `confirm` | `true` | **Yes** | Must be literally `true` |
+
+**Returns**:
+```json
+{
+  "success": true,
+  "id": "comment-uuid",
+  "post_id": "post-uuid",
+  "deleted_replies": 2,
+  "message": "Comentario eliminado correctamente."
+}
+```
+
+**Important**: cascades to replies (`parent_id ON DELETE CASCADE`) — `deleted_replies` is counted before
+the delete, so check it before confirming a thread root. Recalculates `popularity_score`.
+
+**Errors**: `Permiso insuficiente: se requiere 'forum:write'` · `Comentario no encontrado.` ·
+`No tienes permiso para eliminar este comentario. Debes ser su autor o administrador.`
+
+---
+
+### What is deliberately missing
+
+| Not a tool | Why |
+|---|---|
+| `create_forum_category` / `delete_forum_category` | The taxonomy is human-curated in the app. `list_forum_categories` returns `post_count` so you can see which ones are real instead of inventing names |
+| `add_forum_reaction` / `remove_forum_reaction` | `popularity_score` weighs reactions ×3 and drives the human-facing "Populares" tab. A reaction is a person saying "this helped"; an agent emitting them would weight a human ranking. `get_forum_post` still reports reactions, read-only |
+| A view/read tracker | `get_forum_post` never writes `forum_views` or increments `view_count` — an agent reading is not a human reading |
+| `publish_forum_post` / `unpublish_forum_post` | `update_forum_post(status:)` is both |

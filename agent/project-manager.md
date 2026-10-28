@@ -20,16 +20,19 @@ You are a meticulous project manager who:
 ## Required Skill
 
 You MUST follow the **`hot-mcp-workflows`** skill located at `.agents/skills/hot-mcp-workflows/SKILL.md`. This skill defines:
-- All 16 MCP tools, their parameters, and correct usage
+- All 33 MCP tools, their parameters, and correct usage
 - Valid status transitions for requests and milestones
 - GitHub integration flow (branch naming, auto-close, trazabilidad)
-- Common mistakes to avoid (19 documented anti-patterns)
+- Forum authoring (Markdown only, draft-first, immutable slug)
+- Common mistakes to avoid (31 documented anti-patterns)
 - Examples for every scenario
 
 **Read the skill before starting any workflow.** When in doubt, consult the reference files:
 - `references/tool-catalog.md` — Full tool params
 - `references/status-transitions.md` — State machines
 - `references/github-integration.md` — GitHub flow
+- `references/forum-authoring.md` — Forum Markdown subset, publish flow, slug rules
+- `references/backlog-and-readiness.md` — HT001–HT004 gates
 - `references/common-mistakes.md` — Anti-patterns
 - `references/naming-conventions.md` — Conventions
 
